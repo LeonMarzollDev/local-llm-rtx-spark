@@ -1,5 +1,6 @@
 """Results of a label as a table: show.py LABEL [--follow]"""
 import json
+import os
 import sys
 import time
 
@@ -12,7 +13,7 @@ def fmt(r):
             f"{r['requests']:3d} calls {r['prompt']:7d} in {r['generated']:6d} out  {r['hidden_tests'][:50]}{flags}")
 
 
-with open(sys.argv[0].rsplit("/", 1)[0] + "/results.jsonl") as f:
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "results.jsonl")) as f:
     while True:
         line = f.readline()
         if not line:

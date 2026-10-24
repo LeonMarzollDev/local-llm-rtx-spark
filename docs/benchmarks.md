@@ -205,6 +205,25 @@ The memory log of two starts (GiB; voice assistant off, desktop with four displa
 A first start of a different configuration (another MTP count, no speculation) autotunes again and needs more
 memory meanwhile; best with large programs closed.
 
+## Several vLLM models starting at the same time
+
+The voice assistant next to the big models runs three small ones (Qwen3.5-4B, Whisper large-v3-turbo, a Qwen3-TTS
+server). Started together, one of the two vLLM instances regularly crashed with `No available memory for the cache
+blocks` and was restarted by Docker, ~2 minutes lost: vLLM sizes its KV cache by measuring free memory before and
+after a profiling run, and on unified memory it counts what the other instance allocates meanwhile as its own.
+
+| Start | Ready after | Restarts |
+|---|---|---|
+| before (all three at once, `--gpus all`, any cores) | ~170 s | sometimes |
+| all at once, fast cores | 167 s | one instance crashed |
+| one after another | 277 s | none (each first CUDA graph capture took ~45 s on its own) |
+| **all at once, fixed KV cache size** (`--kv-cache-memory-bytes`: 1 GiB and 256 MiB) | **124–126 s** | **none** (twice) |
+
+With a fixed KV cache size there is nothing to measure, so instances can start side by side. Start them only
+after the KV size is known to fit (here 23k tokens for 2 × 8k requests, 2,352 for Whisper's 448-token requests).
+Docker's `--restart unless-stopped` starts all containers at the same moment after a reboot, so the containers
+use `on-failure` and the assistant starts them at login instead.
+
 ## Quality (temperature 0, thinking off)
 
 | Model | HumanEval (40) | BFCL tools (60): simple / multiple / parallel | GSM8K (50) | Spark questions (26) | time for all 150 |

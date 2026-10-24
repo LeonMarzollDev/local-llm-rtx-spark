@@ -18,9 +18,12 @@ right on the laptop (drivers, audio, sleep, touchpad) is a separate project:
 | Qwen3.8 27B, DFlash2×10 ("fast") | 35.1 tok/s (code 64.3) | 15.7 s / 5.8 s | 95 % · 88 % · 96 % (×12) | ~45–63 GiB |
 | Qwen3.8 27B, MTP×4 ("agents") | 32.0 tok/s (code 36.8) | 16.4 s / 1.9 s | 95 % · 88 % · 98 % | ~40–63 GiB |
 
-All numbers, the method and the explanations are in [docs/benchmarks.md](docs/benchmarks.md); the comparison of
-coding harnesses (Qwen Code, OpenCode, Claude Code on the local model) in
-[docs/harness-comparison.md](docs/harness-comparison.md).
+All numbers, the method and the explanations are in [docs/benchmarks.md](docs/benchmarks.md).
+
+Coding harnesses on Flash-Next ([docs/harness-comparison.md](docs/harness-comparison.md), 5 tasks × 2 rounds,
+hidden tests, blind code review): all three solve 10/10 with equally good code (7.7–7.9 of 10); **OpenCode and
+Claude Code are equally fast** (median 108 / 116 s per task) and OpenCode sends ~30 % less context; Qwen Code
+takes ~1.8× as long (only 67 % of its prompts hit the prefix cache).
 
 ## The fixes that matter on unified memory
 
@@ -43,7 +46,7 @@ CPU and GPU share one memory, and the NVIDIA driver takes GPU memory straight fr
 | [docs/benchmarks.md](docs/benchmarks.md) | speed, prefill and prompt cache, memory and context (up to 1M), quality, MTP draft counts, the start-up fixes in detail |
 | [docs/harness-comparison.md](docs/harness-comparison.md) | Qwen Code vs. OpenCode vs. Claude Code on the same local model and tasks |
 | [scripts/llm](scripts/llm) | start / stop one model at a time (presets `flash`, `27b-fast`, `27b-agent`, `27b`), all fixes above built in |
-| [scripts/llm-indicator](scripts/llm-indicator) | GNOME top-bar menu: load / stop models, loading countdown, speed test |
+| [scripts/llm-indicator](scripts/llm-indicator) | GNOME top-bar menu: load / stop models, loading countdown, live generation and prompt speed (from vLLM's `/metrics`), speed test |
 | [scripts/llm-evict-cache](scripts/llm-evict-cache) | drops the model files from the page cache while a model loads |
 | [scripts/llm-swap-reset](scripts/llm-swap-reset) | root helper: `drop_caches` (file cache + driver pool) and an empty swap; with a sudo rule for exactly this file |
 | [bench/](bench/) | the measurement scripts: speed, prefill, context fill, needle in a haystack, quality (HumanEval, BFCL, GSM8K) |

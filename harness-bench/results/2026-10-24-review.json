@@ -1,0 +1,302 @@
+[
+ {
+  "id": "logreport-169",
+  "harness": "qwen",
+  "rep": 1,
+  "correctness": 3,
+  "focus": 5,
+  "clarity": 4,
+  "tests": 3,
+  "overall": 6
+ },
+ {
+  "id": "logreport-564",
+  "harness": "opencode",
+  "rep": 1,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 4,
+  "tests": 3,
+  "overall": 8
+ },
+ {
+  "id": "logreport-580",
+  "harness": "claude",
+  "rep": 2,
+  "correctness": 4,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 3,
+  "overall": 7
+ },
+ {
+  "id": "logreport-621",
+  "harness": "opencode",
+  "rep": 2,
+  "correctness": 4,
+  "focus": 4,
+  "clarity": 2,
+  "tests": 3,
+  "overall": 5
+ },
+ {
+  "id": "logreport-675",
+  "harness": "claude",
+  "rep": 1,
+  "correctness": 4,
+  "focus": 5,
+  "clarity": 4,
+  "tests": 3,
+  "overall": 7
+ },
+ {
+  "id": "logreport-768",
+  "harness": "qwen",
+  "rep": 2,
+  "correctness": 4,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 3,
+  "overall": 8
+ },
+ {
+  "id": "pager-223",
+  "harness": "qwen",
+  "rep": 2,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 5,
+  "overall": 10
+ },
+ {
+  "id": "pager-296",
+  "harness": "qwen",
+  "rep": 1,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 5,
+  "overall": 10
+ },
+ {
+  "id": "pager-334",
+  "harness": "opencode",
+  "rep": 1,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 5,
+  "overall": 10
+ },
+ {
+  "id": "pager-465",
+  "harness": "opencode",
+  "rep": 2,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 5,
+  "overall": 10
+ },
+ {
+  "id": "pager-534",
+  "harness": "claude",
+  "rep": 1,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 5,
+  "overall": 10
+ },
+ {
+  "id": "pager-978",
+  "harness": "claude",
+  "rep": 2,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 5,
+  "overall": 10
+ },
+ {
+  "id": "pairs-105",
+  "harness": "opencode",
+  "rep": 1,
+  "correctness": 4,
+  "focus": 3,
+  "clarity": 3,
+  "tests": 5,
+  "overall": 6
+ },
+ {
+  "id": "pairs-133",
+  "harness": "qwen",
+  "rep": 1,
+  "correctness": 4,
+  "focus": 5,
+  "clarity": 4,
+  "tests": 5,
+  "overall": 8
+ },
+ {
+  "id": "pairs-408",
+  "harness": "claude",
+  "rep": 1,
+  "correctness": 3,
+  "focus": 4,
+  "clarity": 3,
+  "tests": 5,
+  "overall": 5
+ },
+ {
+  "id": "pairs-590",
+  "harness": "qwen",
+  "rep": 2,
+  "correctness": 3,
+  "focus": 4,
+  "clarity": 5,
+  "tests": 5,
+  "overall": 6
+ },
+ {
+  "id": "pairs-619",
+  "harness": "claude",
+  "rep": 2,
+  "correctness": 5,
+  "focus": 4,
+  "clarity": 3,
+  "tests": 5,
+  "overall": 7
+ },
+ {
+  "id": "pairs-806",
+  "harness": "opencode",
+  "rep": 2,
+  "correctness": 3,
+  "focus": 5,
+  "clarity": 4,
+  "tests": 5,
+  "overall": 6
+ },
+ {
+  "id": "shop-315",
+  "harness": "claude",
+  "rep": 1,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 4,
+  "overall": 9
+ },
+ {
+  "id": "shop-340",
+  "harness": "opencode",
+  "rep": 1,
+  "correctness": 5,
+  "focus": 4,
+  "clarity": 4,
+  "tests": 5,
+  "overall": 8
+ },
+ {
+  "id": "shop-722",
+  "harness": "qwen",
+  "rep": 1,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 3,
+  "tests": 3,
+  "overall": 6
+ },
+ {
+  "id": "shop-747",
+  "harness": "claude",
+  "rep": 2,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 4,
+  "tests": 3,
+  "overall": 7
+ },
+ {
+  "id": "shop-851",
+  "harness": "qwen",
+  "rep": 2,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 3,
+  "tests": 4,
+  "overall": 7
+ },
+ {
+  "id": "shop-991",
+  "harness": "opencode",
+  "rep": 2,
+  "correctness": 5,
+  "focus": 4,
+  "clarity": 4,
+  "tests": 4,
+  "overall": 7
+ },
+ {
+  "id": "todo-201",
+  "harness": "qwen",
+  "rep": 1,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 4,
+  "overall": 8
+ },
+ {
+  "id": "todo-353",
+  "harness": "qwen",
+  "rep": 2,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 4,
+  "tests": 5,
+  "overall": 9
+ },
+ {
+  "id": "todo-488",
+  "harness": "opencode",
+  "rep": 2,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 4,
+  "overall": 8
+ },
+ {
+  "id": "todo-657",
+  "harness": "claude",
+  "rep": 2,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 4,
+  "overall": 8
+ },
+ {
+  "id": "todo-825",
+  "harness": "opencode",
+  "rep": 1,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 5,
+  "overall": 9
+ },
+ {
+  "id": "todo-955",
+  "harness": "claude",
+  "rep": 1,
+  "correctness": 5,
+  "focus": 5,
+  "clarity": 5,
+  "tests": 5,
+  "overall": 9
+ }
+]

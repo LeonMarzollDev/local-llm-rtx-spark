@@ -6,7 +6,7 @@
 #                (no prompt cache: 30k tokens = ~16 s) - chat, one-off code, short prompts. The default.
 #     27b-agent  MTP×4: ~32 tok/s, prompt cache (30k tokens again: ~2 s) - agents, long conversations, big repos
 #     --max: stop Spark and the search first and give the model all memory that is free then (back on `llm stop`)
-#   llm stop | status | logs | bench [label]
+#   llm stop | status | logs | bench [label] | cleanup (after a reboot: forget a model that is gone)
 set -euo pipefail
 
 # the docker group is active only after re-login; until then run through sg
@@ -221,6 +221,16 @@ case "${1:-}" in
         wait_ready ;;
     stop)
         stop_model; rm -f "$CACHE/.current"; echo "stopped"; restore_memory ;;
+    cleanup)
+        # a model still marked as loaded although it is gone (a reboot, a crash): cleared like `llm stop`, Spark
+        # back if it was on. Only when its container exists and stopped at least 30 s ago: during a start the old
+        # container is already removed and the new one not there yet, and a failed start cleans up itself
+        [ -e "$CACHE/.current" ] && docker container inspect "$NAME" >/dev/null 2>&1 || exit 0
+        docker container inspect -f '{{.State.Running}}' "$NAME" | grep -q true && exit 0
+        finished=$(date -d "$(docker container inspect -f '{{.State.FinishedAt}}' "$NAME")" +%s 2>/dev/null) || exit 0
+        [ $(( $(date +%s) - finished )) -ge 30 ] || exit 0
+        echo "$(cat "$CACHE/.current") was no longer running (stopped $(date -d "@$finished" '+%F %T')) - cleaned up"
+        stop_model; rm -f "$CACHE/.current"; restore_memory ;;
     status)
         if docker container inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true; then
             state=loading; curl -sf "http://127.0.0.1:$PORT/v1/models" >/dev/null && state=ready

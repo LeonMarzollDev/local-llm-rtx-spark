@@ -26,6 +26,7 @@ MAX_WANTED = Path.home() / "llm/cache/max-memory"      # the menu switch: load m
 API = "http://127.0.0.1:8000/v1/models"
 VARIANTS = [  # (llm variant, menu text, top-bar label) - by recommendation (measured 2026-10-23/24)
     ("flash", "Flash-Next · MoE FP4 · MTP×3 · 262k · ~60 tok/s · Spark pauses", "Flash"),
+    ("flash-512k", "Flash-Next 512k · long context, slower when full · Spark pauses", "Flash 512k"),
     ("27b-fast", "27B Fast · NVFP4 · DFlash2×10 · 262k · ~35 tok/s", "27B Fast"),
     ("27b-agent", "27B Agents · NVFP4 · MTP×4 · prompt cache · ~32 tok/s", "27B Agent"),
     ("27b", "27B · NVFP4 · no speculation · ~12 tok/s", "27B"),
@@ -33,7 +34,7 @@ VARIANTS = [  # (llm variant, menu text, top-bar label) - by recommendation (mea
 NAMES = {v: (text, label) for v, text, label in VARIANTS}
 NAMES.update({"27b-mtp": ("27B · NVFP4 · MTP×4", "27B+M"),          # started by scripts or Spark
               "27b-dflash": ("27B · NVFP4 · DFlash2", "27B+D")})
-DEFAULT_LOAD = {"flash": 300}                            # until a load was measured; 27B variants: 180 s
+DEFAULT_LOAD = {"flash": 300, "flash-512k": 300}                            # until a load was measured; 27B variants: 180 s
 ICON_IDLE = "applications-science-symbolic"
 ICON_LOADING = "content-loading-symbolic"
 PAD = "\u2002"  # en space: some room around the icon and label in the top bar
@@ -272,7 +273,7 @@ class LlmIndicator:
     def on_start(self, _item, variant):
         text = NAMES[variant][0]
         wanted = MAX_WANTED.exists()
-        self.notify(f"Loading {text}" + (" (Spark pauses)" if wanted or variant == "flash" else ""))
+        self.notify(f"Loading {text}" + (" (Spark pauses)" if wanted or variant.startswith("flash") else ""))
         self.run_llm(["start", variant] + (["--max"] if wanted else []), variant, f"{text} is ready")
 
     def on_max(self, item):

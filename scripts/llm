@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run one local model at a time on the RTX Spark via vLLM (OpenAI API on 127.0.0.1:8000).
-#   llm start [27b-fast] | 27b-agent | 27b | 27b-mtp | 27b-dflash | flash [--max]
+#   llm start [27b-fast] | 27b-agent | 27b | 27b-mtp | 27b-dflash | flash | flash-512k [--max]
+#     flash-512k: Flash-Next with 524,288 tokens of context (YaRN ×2), share 0.78 (~11 GB RAM stay free)
 #     presets (2026-10-23 measurements, same answers - speculation is lossless):
 #     27b-fast   DFlash2×10: fastest output (code ~64 tok/s, text ~27-35), but every prompt is read again in full
 #                (no prompt cache: 30k tokens = ~16 s) - chat, one-off code, short prompts. The default.
@@ -92,12 +93,13 @@ start_flash() {
         -e PYTORCH_CUDA_ALLOC_CONF="${LLM_ALLOC_CONF:-expandable_segments:True}" \
         -e VLLM_B12X_MOE_FP4_FORCE_A16=1 -e B12X_W4A16_A4_PREFILL=1 \
         --entrypoint vllm "$IMAGE_FLASH" \
-        serve /models/Qwen3.8-Flash-Next-FP4-Local --served-model-name qwen3.8-flash-next local \
+        serve "/models/${FLASH_DIR:-Qwen3.8-Flash-Next-FP4-Local}" --served-model-name qwen3.8-flash-next local \
         --host 127.0.0.1 --port "$PORT" \
         --tensor-parallel-size 1 --pipeline-parallel-size 1 --mamba-cache-mode align \
         --enable-prefix-caching --enable-chunked-prefill --dtype bfloat16 --kv-cache-dtype fp8 \
         --quantization modelopt_mixed --block-size 16 --load-format b12x \
-        --max-model-len 262144 --max-num-seqs 1 --max-num-batched-tokens 4096 \
+        --max-model-len "${FLASH_LEN:-262144}" \
+        --max-num-seqs 1 --max-num-batched-tokens 4096 \
         --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${LLM_FLASH_MTP:-3}}" \
         --gdn-decode-kernel b12x --linear-backend b12x --moe-backend b12x \
         --no-enable-flashinfer-autotune --mm-encoder-tp-mode data \
@@ -199,10 +201,19 @@ case "${1:-}" in
         variant="${2:-27b-fast}"
         if [ "$variant" = flash ]; then        # 96 GB: fits only with Spark and the search paused
             max=1; LLM_GMU=${LLM_GMU:-0.76}
+        elif [ "$variant" = flash-512k ]; then
+            # 512k needs ~9.7 GiB of context memory (~19 KiB per token) instead of 7.8 at 0.76. Its own model folder
+            # ~/models/Qwen3.8-Flash-Next-FP4-512k (links to the same files, only config.json differs) so that the
+            # MTP drafter sees 512k too - with --hf-config-path only the main model did, and the attention (b12x QSA)
+            # of the drafter stopped at 262,144. config.json: YaRN ×2 and max_position_embeddings 524288 in
+            # text_config (vLLM does not multiply YaRN into the length check); the top-level rope_parameters plain
+            # ("default") - this vLLM's Qwen4ExpConfig copies them up and transformers then fails on a YaRN check
+            # that needs max_position_embeddings at the top level. 1M the same way needs ~18 GiB: too little RAM left
+            max=1; LLM_GMU=${LLM_GMU:-0.78}; FLASH_LEN=524288; FLASH_DIR=Qwen3.8-Flash-Next-FP4-512k
         fi
         case "$variant" in
-            27b|27b-fast|27b-agent|27b-mtp|27b-dflash|flash) ;;
-            *) echo "usage: llm start 27b-fast | 27b-agent | 27b | 27b-mtp | 27b-dflash | flash [--max]" >&2; exit 2 ;;
+            27b|27b-fast|27b-agent|27b-mtp|27b-dflash|flash|flash-512k) ;;
+            *) echo "usage: llm start 27b-fast | 27b-agent | 27b | 27b-mtp | 27b-dflash | flash | flash-512k [--max]" >&2; exit 2 ;;
         esac
         stop_model
         if [ -n "$max" ]; then
@@ -215,7 +226,7 @@ case "${1:-}" in
             27b-mtp|27b-agent) start_27b mtp ;;
             27b-dflash) start_27b dflash ;;
             27b-fast)   LLM_DFLASH_TOKENS=${LLM_DFLASH_TOKENS:-10} start_27b dflash ;;
-            flash)      start_flash ;;
+            flash|flash-512k) start_flash ;;
         esac
         echo "$variant" > "$CACHE/.current"
         wait_ready ;;

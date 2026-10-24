@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# Run one local model at a time on the RTX Spark via vLLM (OpenAI API on 127.0.0.1:8000).
+#   llm start [27b-fast] | 27b-agent | 27b | 27b-mtp | 27b-dflash | flash [--max]
+#     presets (2026-10-23 measurements, same answers - speculation is lossless):
+#     27b-fast   DFlash2×10: fastest output (code ~64 tok/s, text ~27-35), but every prompt is read again in full
+#                (no prompt cache: 30k tokens = ~16 s) - chat, one-off code, short prompts. The default.
+#     27b-agent  MTP×4: ~32 tok/s, prompt cache (30k tokens again: ~2 s) - agents, long conversations, big repos
+#     --max: stop Spark and the search first and give the model all memory that is free then (back on `llm stop`)
+#   llm stop | status | logs | bench [label]
+set -euo pipefail
+
+# the docker group is active only after re-login; until then run through sg
+if ! id -nG | grep -qw docker && getent group docker | grep -qw "$USER"; then
+    exec sg docker -c "$(printf '%q ' "$0" "$@")"
+fi
+
+NAME=llm
+PORT=8000
+MODELS="$HOME/models"
+CACHE="$HOME/llm/cache"
+IMAGE_27B="ghcr.io/timothystewart6/vllm-gb10:v0.30.0-gb10.3"
+IMAGE_FLASH="eugr/spark-vllm-b12x:nightly-20261015"
+
+# the fast cores (Cortex-X925, cpu_capacity ~1000; the A725 cores have ~700): loading the weights is one Python
+# thread per tensor (375k tensors for Flash-Next), and Linux kept moving it onto the slow cores - pinned, a 5 GB
+# shard took 10-15 s instead of 33 s. Only at docker run: `docker update --cpuset-cpus` on a running container
+# rewrites its cgroup and drops the GPU device access (CUDA "operation not permitted")
+fast_cpus() {
+    local c cap max=0 list=""
+    for c in /sys/devices/system/cpu/cpu[0-9]*; do
+        cap=$(cat "$c/cpu_capacity" 2>/dev/null) || return 0
+        [ "$cap" -gt "$max" ] && max=$cap
+    done
+    for c in /sys/devices/system/cpu/cpu[0-9]*; do
+        cap=$(cat "$c/cpu_capacity")
+        [ $((cap * 10)) -ge $((max * 9)) ] && list="$list${list:+,}${c##*cpu}"
+    done
+    [ -n "$list" ] && echo "--cpuset-cpus $list"
+}
+
+# GPU via CDI (--device nvidia.com/gpu=all, spec /var/run/cdi/nvidia.yaml from nvidia-cdi-refresh at boot), not
+# --gpus all: that way the GPU devices are in the container's systemd unit, and a systemd reload (snapd, apt
+# updates) no longer takes the GPU away from running containers (CUDA "operation not permitted", 2026-10-24)
+common_docker_args() {   # $1 = cache subdir
+    mkdir -p "$CACHE/$1" "$CACHE/$1-triton"
+    echo --device nvidia.com/gpu=all --ipc host --network host --shm-size 16g --ulimit memlock=-1 $(fast_cpus) \
+         -v "$MODELS:/models:ro" -v "$CACHE/$1:/root/.cache" -v "$CACHE/$1-triton:/root/.triton" \
+         -e HF_HUB_OFFLINE=1 -e VLLM_ENGINE_READY_TIMEOUT_S=3600
+}
+
+start_27b() {   # $1 = none | mtp | dflash; LLM_EXTRA_ARGS = more vllm serve flags (for tests)
+    local spec=() extra=()
+    read -ra extra <<< "${LLM_EXTRA_ARGS:-}"
+    case "$1" in
+        mtp)    spec=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${LLM_MTP_TOKENS:-4}}") ;;
+        dflash) spec=(--speculative-config "{\"method\":\"dflash\",\"model\":\"/models/Qwen3.8-27B-DFlash2\",\"num_speculative_tokens\":${LLM_DFLASH_TOKENS:-7}}") ;;
+    esac
+    # shellcheck disable=SC2046
+    docker run -d --name "$NAME" $(common_docker_args vllm-gb10) "$IMAGE_27B" \
+        vllm serve /models/Qwen3.8-27B-NVFP4 --served-model-name qwen3.8-27b local \
+        --host 127.0.0.1 --port "$PORT" \
+        --kv-cache-dtype fp8_e4m3 --max-model-len 262144 --max-num-seqs 4 \
+        --gpu-memory-utilization "${LLM_GMU:-0.55}" --enable-chunked-prefill --safetensors-load-strategy eager \
+        --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+        "${spec[@]}" "${extra[@]}" >/dev/null
+}
+
+start_flash() {
+    # NVIDIA's DGX Spark recipe for this checkpoint; n-gram table read from disk (io_uring needs
+    # the unconfined seccomp profile); on the laptop: always max memory, share 0.76, one conversation of 262k
+    # (room for 390k tokens; 20 GB of RAM stay free while it runs), and the model files
+    # dropped from the file cache while it loads - the NVIDIA driver
+    # takes GPU memory straight from RAM and fails (NV_ERR_NO_MEMORY) instead of waiting for Linux to free the cache.
+    # MTP×3 (LLM_FLASH_MTP): 2026-10-24 ×2-×6 measured, ×3 best on average (code 62.6, prose 45.0, structured 56.5
+    # tok/s over 4 runs; ×4 61.1/41.9/57.8; ×5 and ×6 lose on prose, ×2 on code)
+    # 3 kernel compilers instead of 8: a first start with new shapes autotunes, ~1.5 GB per compiler outside the share
+    # expandable_segments: GPU memory freed while the weights are repacked is reused instead of piling up - without
+    # it the repacking peaked at 104+ GB and the start failed (2026-10-24); with it: 85 GB, same speed
+    # swap emptied first (user-approved 2026-10-24; its pages back into RAM, if there is room): the loading peak gets
+    # the whole swap as a buffer. Needs /usr/local/sbin/llm-swap-reset + its sudoers rule; without them: skipped
+    sudo -n /usr/local/sbin/llm-swap-reset >/dev/null 2>&1 || true
+    rm -f "$CACHE/.last-failure"
+    "$HOME/.local/bin/llm-evict-cache" "$MODELS/Qwen3.8-Flash-Next-FP4-Local" 1800 >/dev/null 2>&1 &
+    # shellcheck disable=SC2046
+    docker run -d --name "$NAME" $(common_docker_args spark-vllm-b12x) \
+        --ulimit stack=67108864 --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+        -e VLLM_PLE_TABLE_MEMORY=disk -e B12X_DISK_BACKEND=io_uring -e CUTE_DSL_ARCH=sm_121a \
+        -e SAFETENSORS_FAST_GPU=1 -e VLLM_WORKER_MULTIPROC_METHOD=spawn -e VLLM_SSM_CONV_STATE_LAYOUT=DS \
+        -e VLLM_USE_AOT_COMPILE=1 -e VLLM_USE_MEGA_AOT_ARTIFACT=1 -e VLLM_USE_V2_MODEL_RUNNER=1 \
+        -e B12X_POLICY_MODE=auto -e VLLM_MXFP8_LM_HEAD=1 -e VLLM_B12X_MOE_FP4_LAYER_MAX_INPUT_SCALE=w13 \
+        -e B12X_COMPILE_WORKERS="${B12X_COMPILE_WORKERS:-3}" \
+        -e PYTORCH_CUDA_ALLOC_CONF="${LLM_ALLOC_CONF:-expandable_segments:True}" \
+        -e VLLM_B12X_MOE_FP4_FORCE_A16=1 -e B12X_W4A16_A4_PREFILL=1 \
+        --entrypoint vllm "$IMAGE_FLASH" \
+        serve /models/Qwen3.8-Flash-Next-FP4-Local --served-model-name qwen3.8-flash-next local \
+        --host 127.0.0.1 --port "$PORT" \
+        --tensor-parallel-size 1 --pipeline-parallel-size 1 --mamba-cache-mode align \
+        --enable-prefix-caching --enable-chunked-prefill --dtype bfloat16 --kv-cache-dtype fp8 \
+        --quantization modelopt_mixed --block-size 16 --load-format b12x \
+        --max-model-len 262144 --max-num-seqs 1 --max-num-batched-tokens 4096 \
+        --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${LLM_FLASH_MTP:-3}}" \
+        --gdn-decode-kernel b12x --linear-backend b12x --moe-backend b12x \
+        --no-enable-flashinfer-autotune --mm-encoder-tp-mode data \
+        --reasoning-parser qwen3 --tool-call-parser qwen3_xml --enable-auto-tool-choice \
+        --compilation-config '{"pass_config":{"fuse_act_quant":true}}' \
+        --gpu-memory-utilization "${LLM_GMU:-0.66}" ${LLM_EXTRA_ARGS:-} >/dev/null   # later flags win (tests)
+    # a watchdog until it is ready: below 3 GB of free RAM the start is stopped, before the desktop has to give way;
+    # every 5 s one line of memory to $CACHE/flash-load.log (where a failed start ran out)
+    ( id=$(docker inspect -f '{{.Id}}' "$NAME" 2>/dev/null)
+      echo "time      avail  free  kreclaim  swap  model(cgroup)  [MB]   last log line" > "$CACHE/flash-load.log"
+      while sleep 5; do
+          curl -sf -m 2 "http://127.0.0.1:$PORT/v1/models" >/dev/null && exit 0
+          docker container inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true || exit 0
+          avail=$(awk '/^MemAvailable/ {print int($2 / 1024)}' /proc/meminfo)
+          printf '%s %6s %5s %9s %5s %14s   %s\n' "$(date +%T)" "$avail" \
+              "$(awk '/^MemFree/ {print int($2 / 1024)}' /proc/meminfo)" \
+              "$(awk '/^KReclaimable/ {print int($2 / 1024)}' /proc/meminfo)" \
+              "$(awk '/^SwapTotal/ {t = $2} /^SwapFree/ {f = $2} END {print int((t - f) / 1024)}' /proc/meminfo)" \
+              "$(awk '{print int($1 / 1048576)}' "/sys/fs/cgroup/system.slice/docker-$id.scope/memory.current" 2>/dev/null)" \
+              "$(docker logs --tail 1 "$NAME" 2>&1 | tr '\r' '\n' | tail -1 | cut -c1-110)" >> "$CACHE/flash-load.log"
+          if [ "$avail" -lt 3072 ]; then
+              echo "stopped while loading: only ${avail} MB of RAM were left" > "$CACHE/.last-failure"
+              docker stop -t 10 "$NAME" >/dev/null 2>&1; exit 0
+          fi
+      done ) >/dev/null 2>&1 &
+}
+
+# a model off = all of it: the container, the cache evictor of a Flash-Next start, and its memory - the NVIDIA
+# driver keeps freed GPU memory in its own pool (KReclaimable) instead of handing it back, so the next start (or
+# Spark) would find it missing; llm-swap-reset empties the pool (without its sudoers rule: skipped)
+stop_model() {
+    if docker container inspect "$NAME" >/dev/null 2>&1; then
+        echo "stopping $(cat "$CACHE/.current" 2>/dev/null || echo model)…"
+        docker stop -t 30 "$NAME" >/dev/null 2>&1 || true
+        docker rm -f "$NAME" >/dev/null 2>&1 || true
+        pkill -f "^[^ ]*python3 $HOME/.local/bin/llm-evict-cache" 2>/dev/null || true
+        sleep 1; sudo -n /usr/local/sbin/llm-swap-reset >/dev/null 2>&1 || true
+    fi
+}
+
+# max memory mode: Spark (speech recognition, its model, the voice) makes room for a big model. The search (searxng,
+# ~0.4 GB) stays: coding tools such as Qwen Code use it, and a stopped container would also stay off after a reboot
+free_memory() {
+    # .max remembers whether Spark was on: only then it comes back when the model stops (switched off = stays off)
+    if [ ! -e "$CACHE/.max" ]; then
+        if systemctl --user is-active -q voice-assistant.service \
+           || docker container inspect voice-llm >/dev/null 2>&1; then
+            echo on > "$CACHE/.max"
+        else
+            echo off > "$CACHE/.max"
+        fi
+    fi
+    echo "max memory: stopping Spark…"
+    "$HOME/.local/bin/voice" off >/dev/null 2>&1 || true
+    sleep 2
+    # the model's share of all memory: what is free now, minus 4 GB for the desktop to breathe, at most 0.82 - the
+    # NVIDIA driver takes GPU memory straight from RAM and fails instead of waiting for Linux to drop the file cache
+    # (full of the model files just read): at 0.91 Flash-Next died with NV_ERR_NO_MEMORY. LLM_GMU set: that one.
+    # LC_ALL=C: in a German locale awk writes 0,88, which vLLM refuses
+    [ -n "${LLM_GMU:-}" ] || LLM_GMU=$(LC_ALL=C awk '/^MemTotal/ {t = $2} /^MemAvailable/ {a = $2} END {g = (a - 4 * 1048576) / t;
+                   if (g > 0.82) g = 0.82; printf "%.2f", g}' /proc/meminfo)
+    export LLM_GMU
+    echo "max memory: the model may use ${LLM_GMU} of $(free -g | awk 'NR==2 {print $2}') GiB"
+}
+
+restore_memory() {
+    [ -e "$CACHE/.max" ] || return 0
+    local spark
+    spark=$(cat "$CACHE/.max" 2>/dev/null)
+    rm -f "$CACHE/.max"
+    docker start searxng >/dev/null 2>&1 || true
+    if [ "$spark" = off ]; then
+        echo "Spark stays off (it was off before the model started)"
+    else
+        "$HOME/.local/bin/voice" on >/dev/null 2>&1 || true
+        echo "Spark and the search are back"
+    fi
+}
+
+wait_ready() {
+    echo "loading (first start compiles kernels and can take 5–15 min; 'llm logs' to watch)…"
+    until curl -sf "http://127.0.0.1:$PORT/v1/models" >/dev/null; do
+        if ! docker container inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true; then
+            [ -s "$CACHE/.last-failure" ] && cat "$CACHE/.last-failure"
+            echo "model container exited — last log lines:"; docker logs --tail 25 "$NAME" 2>&1
+            docker logs "$NAME" > "$CACHE/last-failed-start.log" 2>&1   # kept: stop_model removes the container
+            stop_model; rm -f "$CACHE/.current"; restore_memory; exit 1
+        fi
+        sleep 5
+    done
+    echo "ready: $(curl -s "http://127.0.0.1:$PORT/v1/models" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"][0]["id"])') on http://127.0.0.1:$PORT/v1"
+}
+
+case "${1:-}" in
+    start)
+        max=""
+        [ "${2:-}" = "--max" ] && { max=1; shift; }       # `llm start --max` = the default model, max memory
+        [ "${3:-}" = "--max" ] && max=1
+        variant="${2:-27b-fast}"
+        if [ "$variant" = flash ]; then        # 96 GB: fits only with Spark and the search paused
+            max=1; LLM_GMU=${LLM_GMU:-0.76}
+        fi
+        case "$variant" in
+            27b|27b-fast|27b-agent|27b-mtp|27b-dflash|flash) ;;
+            *) echo "usage: llm start 27b-fast | 27b-agent | 27b | 27b-mtp | 27b-dflash | flash [--max]" >&2; exit 2 ;;
+        esac
+        stop_model
+        if [ -n "$max" ]; then
+            free_memory
+        elif [ -e "$CACHE/.max" ]; then
+            restore_memory                 # a normal start after a max one: Spark comes back
+        fi
+        case "$variant" in
+            27b)        start_27b none ;;
+            27b-mtp|27b-agent) start_27b mtp ;;
+            27b-dflash) start_27b dflash ;;
+            27b-fast)   LLM_DFLASH_TOKENS=${LLM_DFLASH_TOKENS:-10} start_27b dflash ;;
+            flash)      start_flash ;;
+        esac
+        echo "$variant" > "$CACHE/.current"
+        wait_ready ;;
+    stop)
+        stop_model; rm -f "$CACHE/.current"; echo "stopped"; restore_memory ;;
+    status)
+        if docker container inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true; then
+            state=loading; curl -sf "http://127.0.0.1:$PORT/v1/models" >/dev/null && state=ready
+            echo "running: $(cat "$CACHE/.current" 2>/dev/null || echo '?') ($state), up $(docker ps --filter name=^$NAME$ --format '{{.RunningFor}}')$([ -e "$CACHE/.max" ] && echo ', max memory mode: Spark off')"
+        else
+            echo "no model running"
+        fi
+        free -g | awk 'NR==2{print "memory: " $3 " GiB used, " $7 " GiB available of " $2}' ;;
+    logs)
+        docker logs -f --tail 50 "$NAME" ;;
+    bench)
+        python3 "${LLM_BENCH:-$HOME/llm/bench.py}" "http://127.0.0.1:$PORT/v1" "${2:-$(cat "$CACHE/.current" 2>/dev/null || echo run)}" ;;
+    *)
+        sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

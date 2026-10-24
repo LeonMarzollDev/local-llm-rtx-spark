@@ -1,0 +1,1 @@
+The tests in test_pager.py fail (run them with `python3 -m unittest -v`). Find and fix the bug(s) in pager.py so that pager.py does what its docstrings say. Do not change the tests.

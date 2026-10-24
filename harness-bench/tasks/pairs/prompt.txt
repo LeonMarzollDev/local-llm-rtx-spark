@@ -1,0 +1,1 @@
+test_speed in test_pairs.py fails because unique_pairs in pairs.py is far too slow. Make unique_pairs fast without changing what it returns for any input. Do not change the tests. Run them with python3 -m unittest -v.

@@ -1,0 +1,5 @@
+__pycache__/
+bench/quality-data/
+bench/quality-results/
+harness-bench/runs/
+harness-bench/results.jsonl

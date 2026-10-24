@@ -1,0 +1,27 @@
+#!/usr/bin/python3
+"""While a big model loads: tell Linux every few seconds that its files need not stay in the file cache
+(posix_fadvise DONTNEED, no root needed), so the NVIDIA driver finds free memory for the GPU's allocations.
+Runs until the model's API answers or the given time is up.
+    python3 evict-cache.py MODEL_DIR [max seconds]"""
+import os
+import sys
+import time
+import urllib.request
+
+model, limit = sys.argv[1], float(sys.argv[2]) if len(sys.argv) > 2 else 1800
+end = time.monotonic() + limit
+files = [os.path.join(d, f) for d, _, names in os.walk(model) for f in names]
+while time.monotonic() < end:
+    for path in files:
+        try:
+            fd = os.open(path, os.O_RDONLY)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            os.close(fd)
+        except OSError:
+            pass
+    try:
+        urllib.request.urlopen("http://127.0.0.1:8000/v1/models", timeout=2)
+        print("model ready: stopped evicting")
+        break
+    except OSError:
+        time.sleep(5)

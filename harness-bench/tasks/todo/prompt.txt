@@ -1,0 +1,1 @@
+todo.py only implements part of README.md. Implement the rest so that the program behaves exactly as README.md describes (the `done` command, `list --open`, the [ ] / [x] markers and the "nothing to do" line). Keep the existing behaviour of `add`. Add unit tests for the new behaviour in test_todo.py (standard library unittest).

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Before a big local model loads: give it memory as clean as right after a boot.
+# 1. Drop the kernel's reclaimable caches: the file cache and the NVIDIA driver's system memory pool, where GPU memory
+#    of a stopped model stays as "reclaimable" (81 GB once) - the driver does not take it back fast enough when the
+#    next model loads (NV_ERR_NO_MEMORY). Clean pages only: nothing is lost.
+# 2. Empty the swap (its pages back into RAM), only when RAM has room for them (+4 GB); skipped under 0.5 GB in use.
+# Installed as /usr/local/sbin/llm-swap-reset; `llm start flash` runs it via sudo (NOPASSWD for this file only).
+sync
+echo 3 > /proc/sys/vm/drop_caches
+used=$(awk '/^SwapTotal/ {t = $2} /^SwapFree/ {f = $2} END {print t - f}' /proc/meminfo)
+avail=$(awk '/^MemAvailable/ {print $2}' /proc/meminfo)
+[ "$used" -lt 524288 ] && exit 0
+[ "$avail" -gt $((used + 4194304)) ] || { echo "llm-swap-reset: not enough free RAM to empty the swap" >&2; exit 1; }
+swapoff -a && swapon -a

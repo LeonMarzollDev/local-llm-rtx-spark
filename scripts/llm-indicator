@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+# Top-bar menu for the local models: shows which one is loaded and loads/stops them via `llm`.
+# Needs gir1.2-ayatanaappindicator3-0.1 and GNOME's AppIndicator extension (both present on Ubuntu).
+import datetime
+import json
+import os
+import subprocess
+import time
+import urllib.request
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Notify", "0.7")
+gi.require_version("AyatanaAppIndicator3", "0.1")
+from gi.repository import AyatanaAppIndicator3 as AppIndicator  # noqa: E402
+from gi.repository import GLib, Gtk, Notify  # noqa: E402
+
+LLM = str(Path.home() / ".local/bin/llm")
+CURRENT = Path.home() / "llm/cache/.current"
+MAX_ACTIVE = Path.home() / "llm/cache/.max"            # `llm start --max` paused Spark
+LOAD_TIMES = Path.home() / "llm/cache/load-times.json"  # how long each model took to load last time (s)
+LAST_FAILURE = Path.home() / "llm/cache/.last-failure"  # why `llm` stopped the last start (its watchdog)
+MAX_WANTED = Path.home() / "llm/cache/max-memory"      # the menu switch: load models that way
+API = "http://127.0.0.1:8000/v1/models"
+VARIANTS = [  # (llm variant, menu text, top-bar label) - by recommendation (measured 2026-10-23/24)
+    ("flash", "Flash-Next · MoE FP4 · MTP×3 · 262k · ~60 tok/s · Spark pauses", "Flash"),
+    ("27b-fast", "27B Fast · NVFP4 · DFlash2×10 · 262k · ~35 tok/s", "27B Fast"),
+    ("27b-agent", "27B Agents · NVFP4 · MTP×4 · prompt cache · ~32 tok/s", "27B Agent"),
+    ("27b", "27B · NVFP4 · no speculation · ~12 tok/s", "27B"),
+]
+NAMES = {v: (text, label) for v, text, label in VARIANTS}
+NAMES.update({"27b-mtp": ("27B · NVFP4 · MTP×4", "27B+M"),          # started by scripts or Spark
+              "27b-dflash": ("27B · NVFP4 · DFlash2", "27B+D")})
+DEFAULT_LOAD = {"flash": 300}                            # until a load was measured; 27B variants: 180 s
+ICON_IDLE = "applications-science-symbolic"
+ICON_LOADING = "content-loading-symbolic"
+PAD = "\u2002"  # en space: some room around the icon and label in the top bar
+
+
+def load_started():
+    """When the model container started (epoch seconds), or None."""
+    try:
+        out = subprocess.run(["docker", "inspect", "-f", "{{.State.StartedAt}}", "llm"], capture_output=True,
+                             text=True, timeout=3).stdout.strip()
+        return datetime.datetime.fromisoformat(out[:26].rstrip("Z") + "+00:00").timestamp() if out else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def load_times():
+    try:
+        return json.loads(LOAD_TIMES.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def clock(seconds):
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def api_ready():
+    try:
+        with urllib.request.urlopen(API, timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+class LlmIndicator:
+    def __init__(self):
+        Notify.init("Local models")
+        self.job = None          # running `llm start/stop` process started from the menu
+        self.job_variant = None
+        self.loading = None      # (variant, container start) of the load being shown
+        self.indicator = AppIndicator.Indicator.new(
+            "llm-indicator", ICON_IDLE, AppIndicator.IndicatorCategory.APPLICATION_STATUS)
+        self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
+        self.indicator.set_title("Local models")
+
+        menu = Gtk.Menu()
+        self.status_item = Gtk.MenuItem(label="")
+        self.status_item.set_sensitive(False)
+        menu.append(self.status_item)
+        menu.append(Gtk.SeparatorMenuItem())
+        self.variant_items = {}
+        for variant, text, _ in VARIANTS:
+            item = Gtk.MenuItem(label=f"Load {text}")
+            item.connect("activate", self.on_start, variant)
+            menu.append(item)
+            self.variant_items[variant] = item
+        self.stop_item = Gtk.MenuItem(label="Stop model")
+        self.stop_item.connect("activate", self.on_stop)
+        menu.append(self.stop_item)
+        # all memory for the model: Spark (~17 GB) and the search pause while it runs, and come back on Stop
+        self.max_item = Gtk.CheckMenuItem(label="Max memory (Spark pauses while a model runs)")
+        self.max_item.set_active(MAX_WANTED.exists())
+        self.max_item.connect("toggled", self.on_max)
+        menu.append(self.max_item)
+        menu.append(Gtk.SeparatorMenuItem())
+        logs = Gtk.MenuItem(label="Show log")
+        logs.connect("activate", lambda _: self.in_terminal("logs"))
+        menu.append(logs)
+        bench = Gtk.MenuItem(label="Speed test")
+        bench.connect("activate", lambda _: self.in_terminal("bench"))
+        menu.append(bench)
+        menu.show_all()
+        self.indicator.set_menu(menu)
+
+        self.refresh()
+        GLib.timeout_add_seconds(3, self.refresh)
+
+    def state(self):
+        """(variant or None, 'ready' | 'loading' | 'stopping' | 'idle')"""
+        if self.job and self.job_variant == "stop":
+            return None, "stopping"
+        variant = CURRENT.read_text().strip() if CURRENT.exists() else None
+        if not variant:
+            return None, "idle"
+        return variant, "ready" if api_ready() else "loading"
+
+    def refresh(self):
+        variant, state = self.state()
+        if state == "ready" and self.loading and self.loading[0] == variant and self.loading[1]:
+            times = load_times()                         # learn how long this model takes to load
+            took = time.time() - self.loading[1]
+            times[variant] = round(took if variant not in times else (times[variant] + took) / 2)
+            try:
+                LOAD_TIMES.write_text(json.dumps(times))
+            except OSError:
+                pass
+        if state != "loading":
+            self.loading = None
+        text, label = NAMES.get(variant, (variant or "", variant or ""))
+        if state == "ready":
+            self.indicator.set_icon_full(ICON_IDLE, f"{text} ready")
+            self.indicator.set_label(f"{PAD}{label}{PAD}", f"{PAD}Flash{PAD}")
+            self.status_item.set_label(f"● {text} — ready on 127.0.0.1:8000"
+                                       + (" · max memory, Spark paused" if MAX_ACTIVE.exists() else ""))
+        elif state == "loading":
+            # a countdown like Spark's: the time since the container started against the last load of this model.
+            # Read every time: a new start of the same model replaces the container (the old start time, or none
+            # while the memory is being prepared, made the countdown and the learned load time wrong)
+            started = load_started()
+            if not self.loading or self.loading[0] != variant or self.loading[1] != started:
+                self.loading = (variant, started)
+            started = self.loading[1]
+            expected = load_times().get(variant, DEFAULT_LOAD.get(variant, 180))
+            elapsed = time.time() - started if started else 0
+            if started and elapsed < expected:
+                pct, left = int(100 * elapsed / expected), expected - elapsed
+                self.indicator.set_label(f"{PAD}{label} {pct} % · {clock(left)}{PAD}", f"{PAD}Flash 99 % · 99:99{PAD}")
+                self.status_item.set_label(f"◌ {text} — loading {pct} % · ~{clock(left)} left")
+            else:                                        # longer than last time: show how long it runs
+                self.indicator.set_label(f"{PAD}{label} {clock(elapsed)}…{PAD}", f"{PAD}Flash 99 % · 99:99{PAD}")
+                self.status_item.set_label(f"◌ {text} — loading for {clock(elapsed)} (longer than last time)")
+            self.indicator.set_icon_full(ICON_LOADING, f"{text} loading")
+        elif state == "stopping":
+            self.indicator.set_icon_full(ICON_LOADING, "stopping")
+            self.indicator.set_label(PAD, PAD)
+            self.status_item.set_label("◌ stopping…")
+        else:
+            self.indicator.set_icon_full(ICON_IDLE, "no model loaded")
+            self.indicator.set_label(PAD, PAD)
+            self.status_item.set_label("No model loaded")
+        busy = self.job is not None
+        for v, item in self.variant_items.items():
+            item.set_sensitive(not busy and not (v == variant and state == "ready"))
+        self.stop_item.set_sensitive(not busy and state in ("ready", "loading"))
+        return True
+
+    def run_llm(self, args, variant, done_message):
+        self.job = subprocess.Popen([LLM, *args], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        self.job_variant = variant
+        self.refresh()
+
+        def check():
+            if self.job.poll() is None:
+                return True
+            ok = self.job.returncode == 0
+            self.job = self.job_variant = None
+            if ok and done_message:
+                self.notify(done_message)
+            elif not ok:
+                reason = LAST_FAILURE.read_text().strip() if LAST_FAILURE.exists() else ""
+                self.notify(f"Loading failed{' — ' + reason if reason else ''} · details: “Show log”")
+            self.refresh()
+            return False
+
+        GLib.timeout_add_seconds(2, check)
+
+    def on_start(self, _item, variant):
+        text = NAMES[variant][0]
+        wanted = MAX_WANTED.exists()
+        self.notify(f"Loading {text}" + (" (Spark pauses)" if wanted or variant == "flash" else ""))
+        self.run_llm(["start", variant] + (["--max"] if wanted else []), variant, f"{text} is ready")
+
+    def on_max(self, item):
+        if item.get_active():
+            MAX_WANTED.touch()
+        else:
+            MAX_WANTED.unlink(missing_ok=True)
+
+    def on_stop(self, _item):
+        spark_back = MAX_ACTIVE.exists() and MAX_ACTIVE.read_text().strip() != "off"
+        self.run_llm(["stop"], "stop", "Model stopped — memory is free again"
+                     + (", Spark is back" if spark_back else ""))
+
+    def in_terminal(self, cmd):
+        subprocess.Popen(["ptyxis", "-x", f"{LLM} {cmd}"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def notify(self, body):
+        note = Notify.Notification.new("Local models", body, ICON_IDLE)
+        try:
+            note.show()
+        except GLib.Error:
+            pass
+
+
+if __name__ == "__main__":
+    os.chdir(Path.home())
+    LlmIndicator()
+    Gtk.main()

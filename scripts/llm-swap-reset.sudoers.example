@@ -1,0 +1,2 @@
+# /etc/sudoers.d/llm-swap-reset (root, 0440; check with visudo -cf before installing)
+youruser ALL=(root) NOPASSWD: /usr/local/sbin/llm-swap-reset

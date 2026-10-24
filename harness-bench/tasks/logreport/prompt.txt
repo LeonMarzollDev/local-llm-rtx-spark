@@ -1,0 +1,9 @@
+Write report.py: it reads the access log whose path is given as the first command-line argument (common log format, like access.log here) and prints exactly this:
+
+requests: <number of requests>
+top ips:
+  <ip> <count>
+  ... (the 5 IPs with the most requests, most first; on equal counts the smaller IP string first)
+server errors: <share of requests with a 5xx status, in percent with one decimal>%
+
+Lines that are not valid log lines are ignored and not counted. Use only the Python standard library. Check it with python3 report.py access.log.

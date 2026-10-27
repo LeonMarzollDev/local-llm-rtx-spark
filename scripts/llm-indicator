@@ -173,7 +173,9 @@ class LlmIndicator:
         if state == "ready" and self.loading and self.loading[0] == variant and self.loading[1]:
             times = load_times()                         # learn how long this model takes to load
             took = time.time() - self.loading[1]
-            times[variant] = round(took if variant not in times else (times[variant] + took) / 2)
+            # mostly the latest load: loads got much faster with the fixes, and a 50:50 average kept an old
+            # 13-minute start in the countdown for several loads
+            times[variant] = round(took if variant not in times else 0.25 * times[variant] + 0.75 * took)
             try:
                 LOAD_TIMES.write_text(json.dumps(times))
             except OSError:
